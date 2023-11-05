@@ -1,6 +1,11 @@
-from core import AddressBook, Record
+import json
 
-contacts = AddressBook()
+from core import AddressBook, Record
+from save_service.save_service import SaveAddressBookInLocalFile
+
+contacts = AddressBook(
+    data_save_service=SaveAddressBookInLocalFile(address="address_book.json")
+)
 
 
 mandatory_data = {
@@ -14,15 +19,13 @@ def input_error(func) -> callable:
         try:
             result = func(*args, **kwargs)
         except KeyError:
-            print(
-                f"Entered name '{args[0]}' was not found. "
-                f"Type help() for details."
-            )
+            return f"Entered name '{args[0]}' was not found. " \
+                   f"Type help() for details."
         except (IndexError, TypeError):
-            print(
-                f"Missing command part, entered data: '{args[0]}', type "
-                f"'help' to see supported commands or exit to stop the bot."
-            )
+            return f"Missing command part, entered data: '{args, kwargs}', type " \
+                   f"'help' to see supported commands or exit to stop the bot."
+        except ValueError:
+            return "Phone number can only consist of 10 digits."
         else:
             return result
     return wrapper
@@ -32,43 +35,90 @@ def hello_command() -> str:
     return "How can I help you?"
 
 
+@input_error
 def add_command(name: str, phone: str, birthday: str = "") -> str | None:
     if contacts.find(name):
         print(
-            f"Contact with this name already exists. Enter another name. "
-            f"\nEntered name: "
+            f"Contact with this name already exists. Enter another name. \n"
+            f"Entered name: "
         )
         return name
     record = Record(username=name)
     record.add_phone(phone=phone)
     if birthday:
         record.add_birthday(birthday)
-    contacts.add_record(record_row=record)
+    contacts.add_record(record_data=record)
     return f"Contact was added.\n" \
            f"| {name:<20} | {phone:<20} | " \
            f"{birthday:<20}"
 
 
 @input_error
-def change_command(name: str, new_phone: int) -> str:
-    contacts[name] = new_phone
-    return f"Contact was changed.\n" \
-           f"| {name:<20} | {contacts[name]:<20} |"
+def change_command(name: str, old_phone: int, new_phone: int) -> str:
+    rec = contacts.find(name)
+    found_phone = [p for p in contacts[name]["phones"] if p == old_phone]
+    if rec and found_phone:
+        rec.edit_phone(old_phone=old_phone, new_phone=new_phone)
+        contacts.update_record(rec)
+        return f"Phone number for contact '{rec.name.value}' has been " \
+               f"changed from '{old_phone}' to '{new_phone}'"
+    elif not rec:
+        return f"The contact with the name '{name}' was not found."
+    return f"Entered phone which should be changed is not found."
 
 
 @input_error
 def phone_command(name: str) -> str:
-    return f"| {'Name':^20} | {'Phone':^20} |\n" \
-           f"{'':-^47}\n" \
-           f"| {name:<20} | {contacts[name]:<20} |"
+    rec = contacts.find(name)
+    if rec:
+        phone_nums = [phone_num.value for phone_num in rec.phones]
+        return f"{rec.name.value}\'s phone number(s): " + ", ".join(phone_nums)
+    return f"The contact with the name '{name}' was not found."
+
+
+def get_formatted_headers() -> str:
+    """
+    Method generate formatted headers string.
+    :return: Formatted headers string.
+    """
+    s = "{:^50}".format("***Clients phone numbers***")
+    s += "\n{:<10} | {:<20} | {:<70} |\n".format(
+        "Number", "User name", "Phone number"
+    )
+    return s
+
+
+@input_error
+def search_contact(data: str):
+    if len(data) < 2:
+        return "Searched phrase must have at least 2 symbols"
+    records = contacts.search_contact(search_phrase=data)
+    divider = f"{'':-^67}\n"
+    existing_contacts = f"{'Number':^20} | {'Name':^20} | {'Phone':^20} |\n" \
+                        f"{'':-^67}\n"
+    for num, record in enumerate(records, start=1):
+        phones_str = ",".join(
+            [phone_num for phone_num in record["info"]["phones"]]
+        )
+        existing_contacts += '{:^20} | {:^20} | {:^20} |\n'.format(
+            num, record["name"], phones_str
+        ) + divider
+    return existing_contacts
 
 
 def show_all_command() -> str:
     existing_contacts = f"| {'Name':^20} | {'Phone':^20} |\n" \
                         f"{'':-^47}\n"
-    for name, phone in contacts.items():
-        existing_contacts += f"| {name:<20} | {phone:<20} |\n"
+    for name, info in zip(contacts.keys(), list(contacts.iterator())):
+        existing_contacts += \
+            f"| {name:<20} | " \
+            f"{', '.join([p for p in info[0]['phones']]):<20} |\n"
     return existing_contacts
+
+
+@input_error
+def delete_contact(name: str) -> str:
+    return contacts.delete(username=name)
 
 
 def exit_command() -> str:
@@ -86,9 +136,7 @@ def show_days_to_birthday(name: str) -> str:
     if record:
         days_to_birthday = record.days_to_birthday()
         return f"Days to the next birthday for '{name}': {days_to_birthday}."
-    else:
-        raise ValueError(
-            f"Contact with a name '{name}' doesn't exist in the Address Book")
+    return f"Contact with a name '{name}' doesn't exist in the Address Book"
 
 
 def help_command() -> str:
@@ -97,12 +145,15 @@ def help_command() -> str:
            2 - 'add' to add a contact, e.g. 'add John 380995057766';\n
            or 'add John 380995057766 30-05-1967';\n
            3 - 'change' to change an existing contact's phone,\n
-           e.g. 'change John 380995051919';\n
+           e.g. 'change John 380995051919 1234567890';\n
            4 - 'phone' to see a contact, e.g. 'phone John';\n
            5 - 'show all' to show all contacts which were add during the 
            session with the bot:\n
            6 - 'good bye', 'close' or 'exit' to stop the bot;\n
-           7 - 'help' to see description and supported commands.\n\n
+           7 - 'search na' or 'search 123' to search in the address book 
+           by any match in name or phone;\n
+           8 - 'delete john' to remove a whole contact by name.\n
+           9 - 'help' to see description and supported commands.\n\n
            Each command, name or phone should be separated by a 
            space like ' '.
            Each command should be entered in order like 'command name 
@@ -134,10 +185,14 @@ def parse_command(input_data: str) -> dict:
         "command": " ".join(command_parts[0:2]).lower() if any(
             map(input_data.lower().startswith, {"show all", "good bye"})
         ) else command_parts[0].lower(),
+        "data": command_parts[1] if command_parts[0].lower() in {
+            "search"} else None,
         "name": command_parts[1] if command_parts[0].lower() in {
-            "add", "change", "phone"} else None,
+            "add", "change", "phone", "delete"} else None,
         "phone": str(command_parts[2]) if command_parts[0].lower() in {
             "add", "change"} else None,
+        "new_phone": str(command_parts[3]) if command_parts[0].lower() in {
+            "change"} else None,
         "days_to_birthday": command_parts[-1] if len(command_parts) > 3 else "",
     }
 
@@ -157,6 +212,10 @@ def start_bot() -> callable:
         if not parsed_data:
             continue
 
+        if isinstance(parsed_data, str):
+            print(parsed_data)
+            continue
+
         match parsed_data["command"]:
             case "hello":
                 result = hello_command()
@@ -167,16 +226,21 @@ def start_bot() -> callable:
                 )
             case "change":
                 result = change_command(
-                    parsed_data["name"], parsed_data["phone"]
+                    name=parsed_data["name"], old_phone=parsed_data["phone"],
+                    new_phone=parsed_data["new_phone"]
                 )
             case "phone":
                 result = phone_command(parsed_data["name"])
+            case "search":
+                result = search_contact(parsed_data["data"])
             case "show all":
                 result = show_all_command()
+            case "delete":
+                result = delete_contact(parsed_data["name"])
             case "help":
                 result = help_command()
             case "show days to birthday":
-                result = show_days_to_birthday(name=parsed_data["name"])
+                result = show_days_to_birthday(parsed_data["name"])
             case command if command in {"good bye", "close", "exit"}:
                 result = exit_command()
             case _:

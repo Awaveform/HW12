@@ -1,3 +1,4 @@
+import json
 from collections import UserDict
 from datetime import datetime
 from typing import Generator
@@ -31,8 +32,6 @@ class Name(Field):
 
 class Phone(Field):
     def __init__(self, phone: str):
-        if not len(phone) == 10 or not phone.isdigit():
-            raise ValueError("Phone number can only consist of 10 digits.")
         self.phone = phone
         super().__init__(value=self.phone)
 
@@ -43,7 +42,7 @@ class Phone(Field):
     @value.setter
     def value(self, phone: str):
         if not len(phone) == 10 or not phone.isdigit():
-            raise ValueError("Phone number can only consist of 10 digits.")
+            raise ValueError
         self.phone = phone
 
 
@@ -77,9 +76,26 @@ class Record:
         self.phones = []
         self.birthday = Birthday(birthday)
 
+    def __str__(self):
+        return f"Contact name: {self.name.value}, " \
+               f"phones: {'; '.join(p.value for p in self.phones)}"
+
+    def serialize_data(self):
+        birthday = self.birthday.value
+        birthday_str = birthday.strftime(DATE_FORMAT) if birthday else None
+        return json.dumps(
+            {
+                self.name.value:
+                    {
+                        "phones": [phone_num.value for phone_num in self.phones],
+                        "birthday": birthday_str
+                    }
+            }
+        )
+
     def add_birthday(self, birthday: str):
         self.birthday = Birthday(birthday)
-        return f"'{birthday}' was set as a birthday date to a contant with " \
+        return f"'{birthday}' was set as a birthday date to a contact with " \
                f"name '{self.name.value}'"
 
     def days_to_birthday(self):
@@ -99,71 +115,108 @@ class Record:
 
     def add_phone(self, phone: str):
         self.phones.append(Phone(phone))
-        print(f"Added phone: {phone}.")
+        return f"Added phone: {phone}."
 
     def remove_phone(self, phone: str):
         if num := [number for number in self.phones if number.value == phone]:
             self.phones.remove(num[0])
-            print(f"Deleted phone: {phone}.")
-        else:
-            print(
-                f"Phone was not found: '{phone}', "
-                f"enter existing phone to delete."
-            )
+            return f"Deleted phone: {phone}."
+        return f"Phone was not found: '{phone}', " \
+               f"enter existing phone to delete."
 
     def edit_phone(self, old_phone: str, new_phone: str):
         if old := [number for number in self.phones if number.value == old_phone]:
             ind = self.phones.index(old[0])
             self.phones[ind] = Phone(new_phone)
-            print(f"Edited phone: {old_phone} to {new_phone}.")
-        else:
-            raise ValueError(
-                f"Phone was not found: '{old_phone}', "
-                f"enter existing phone to edit."
-            )
+            return f"Edited phone: {old_phone} to {new_phone}."
+        return f"Phone was not found: '{old_phone}', " \
+               f"enter existing phone to edit."
 
     def find_phone(self, phone: str):
         if [numb for numb in self.phones if numb.value == phone]:
             print(f"The phone was found: {phone}.")
             return Phone(phone)
-        else:
-            print(f"The phone wasn't found: {phone}.")
-
-    def __str__(self):
-        return f"Contact name: {self.name.value}, " \
-               f"phones: {'; '.join(p.value for p in self.phones)}"
+        return f"The phone wasn't found: {phone}."
 
 
 class AddressBook(UserDict):
 
-    def __init__(self):
+    def __init__(self, data_save_service):
         super().__init__()
+        self.data_save = data_save_service
+        self.data.update(
+            self.data_save.read_data(path=self.data_save.address)
+        )
 
     def iterator(self, number_of_records: int = 1) -> Generator:
-        contacts = list(self.data.values())
+        address_book = self.data_save.read_data(path=self.data_save.address)
+        contacts = list(address_book.values())
         step = number_of_records or 1
         return (contacts[i:i + step] for i in range(0, len(contacts), step))
 
-    def add_record(self, record_row: Record):
-        self.data[record_row.name.value] = record_row
-        print(f"New record was added: {record_row.name}.")
+    def add_record(self, record_data):
+        address_book = self.data_save.read_data(
+            path=self.data_save.address)
+        if record_data.name.value not in address_book:
+            self.data[record_data.name.value] = record_data
+            record_data = Record.serialize_data(record_data)
+            address_book.update(json.loads(record_data))
+            self.data_save.save_data(
+                path=self.data_save.address, data=address_book
+            )
+        else:
+            return f"Record with the name '{record_data.name.value}' already " \
+                   f"exists in the address book dictionary"
+
+    def update_record(self, record_data):
+        address_book = self.data_save.read_data(
+            path=self.data_save.address)
+        found_record = address_book.get(record_data.name.value)
+        if found_record:
+            address_book[record_data.name.value] = json.loads(
+                Record.serialize_data(record_data))[record_data.name.value]
+            self.data_save.save_data(path=self.data_save.address,
+                                     data=address_book)
+        else:
+            return f"The contact with a name '{record_data.name.value}' has " \
+                   f"not been found in existing Address Book."
 
     def find(self, username: str):
-        for rec in self.data.values():
-            if rec.name.value == username:
-                print(f"The record was found: {username}.")
-                return rec
-        print(f"The record was not found: {username}.")
-        return None
+        rec = self.data_save.read_data(
+            path=self.data_save.address).get(username)
+        if rec:
+            record_obj = Record(username=username, birthday=rec.get("birthday"))
+            for phone in rec["phones"]:
+                record_obj.add_phone(phone=phone)
+            return record_obj
+        else:
+            return None
+
+    def search_contact(self, search_phrase: str):
+        address_book = self.data_save.read_data(
+            path=self.data_save.address)
+        for _name, info in address_book.items():
+            found_phones = list(
+                filter(
+                    lambda phone: search_phrase in phone, info["phones"]
+                )
+            )
+            if any([search_phrase.lower() in _name.lower(), found_phones]):
+                yield {"name": _name, "info": info}
 
     def delete(self, username):
-        for rec in self.data.values():
-            if rec.name.value == username:
-                del self.data[username]
-                print(f"The record was deleted: {username}.")
-                break
-        else:
-            print(f"The record was not found: {username}.")
+        address_book = self.data_save.read_data(
+            path=self.data_save.address)
+        rec = address_book.get(username)
+        if rec:
+            self.data.pop(username)
+            address_book.pop(username)
+            self.data_save.save_data(
+                path=self.data_save.address, data=address_book
+            )
+            return f"The contact with name '{username}' has been deleted."
+        return f"Contact with the name '{username}' was not deleted, " \
+               f"not found."
 
 
 if __name__ == "__main__":
